@@ -96,7 +96,8 @@ static int get_cmdline(cmdline_t* cmd, int ac, char** av)
 typedef struct
 {
   snd_pcm_t* pcm;
-  snd_pcm_hw_params_t* params;
+  snd_pcm_hw_params_t* hw_params;
+  snd_pcm_sw_params_t* sw_params;
   snd_pcm_channel_area_t* areas;
 
   size_t nchan;
@@ -144,21 +145,21 @@ static int pcm_open(pcm_handle_t* pcm, const pcm_desc_t* desc)
     (&pcm->pcm, desc->name, stm, SND_PCM_NONBLOCK);
   if (err) PERROR_GOTO(snd_strerror(err), on_error_0);
 
-  err = snd_pcm_hw_params_malloc(&pcm->params);
+  err = snd_pcm_hw_params_malloc(&pcm->hw_params);
   if (err) PERROR_GOTO(snd_strerror(err), on_error_1);
 
-  err = snd_pcm_hw_params_any(pcm->pcm, pcm->params);
+  err = snd_pcm_hw_params_any(pcm->pcm, pcm->hw_params);
   if (err) PERROR_GOTO(snd_strerror(err), on_error_2);
 
   err = snd_pcm_hw_params_set_access
-    (pcm->pcm, pcm->params, SND_PCM_ACCESS_RW_INTERLEAVED);
+    (pcm->pcm, pcm->hw_params, SND_PCM_ACCESS_RW_INTERLEAVED);
   if (err) PERROR_GOTO(snd_strerror(err), on_error_2);
 
-  err = snd_pcm_hw_params_set_format(pcm->pcm, pcm->params, fmt);
+  err = snd_pcm_hw_params_set_format(pcm->pcm, pcm->hw_params, fmt);
   if (err) PERROR_GOTO(snd_strerror(err), on_error_2);
 
   err = snd_pcm_hw_params_set_rate
-    (pcm->pcm, pcm->params, desc->fsampl, 0);
+    (pcm->pcm, pcm->hw_params, desc->fsampl, 0);
   if (err) PERROR_GOTO(snd_strerror(err), on_error_2);
 
   pcm->nchan = desc->nchan;
@@ -166,25 +167,48 @@ static int pcm_open(pcm_handle_t* pcm, const pcm_desc_t* desc)
   pcm->scale = pcm->nchan * pcm->wchan;
 
   err = snd_pcm_hw_params_set_channels
-    (pcm->pcm, pcm->params, desc->nchan);
+    (pcm->pcm, pcm->hw_params, desc->nchan);
   if (err) PERROR_GOTO(snd_strerror(err), on_error_2);
   
-  err = snd_pcm_hw_params(pcm->pcm, pcm->params);
+  err = snd_pcm_hw_params(pcm->pcm, pcm->hw_params);
   if (err) PERROR_GOTO(snd_strerror(err), on_error_2);
+
+  err = snd_pcm_sw_params_malloc(&pcm->sw_params);
+  if (err) PERROR_GOTO(snd_strerror(err), on_error_2);
+
+  err = snd_pcm_sw_params_current(pcm->pcm, pcm->sw_params);
+  if (err) PERROR_GOTO(snd_strerror(err), on_error_3);
+
+#if 1
+  err = snd_pcm_sw_params_set_avail_min
+    (pcm->pcm, pcm->sw_params, 4096);
+  if (err) PERROR_GOTO(snd_strerror(err), on_error_3);
+#endif
+
+#if 1
+  err = snd_pcm_sw_params_set_start_threshold
+    (pcm->pcm, pcm->sw_params, 0U);
+  if (err) PERROR_GOTO(snd_strerror(err), on_error_3);
+#endif
+
+  err = snd_pcm_sw_params(pcm->pcm, pcm->sw_params);
+  if (err) PERROR_GOTO(snd_strerror(err), on_error_3);
   
   err = snd_pcm_prepare(pcm->pcm);
-  if (err) PERROR_GOTO(snd_strerror(err), on_error_2);
+  if (err) PERROR_GOTO(snd_strerror(err), on_error_3);
 
   pcm->rpos = 0;
   pcm->wpos = 0;
-  pcm->nsampl = (size_t)desc->fsampl * 1;
+  pcm->nsampl = (size_t)desc->fsampl * 10;
   pcm->buf = malloc(pcm->nsampl * pcm->scale);
-  if (pcm->buf == NULL) goto on_error_2;
+  if (pcm->buf == NULL) goto on_error_3;
 
   return 0;
 
+ on_error_3:
+  snd_pcm_sw_params_free(pcm->sw_params);
  on_error_2:
-  snd_pcm_hw_params_free(pcm->params);
+  snd_pcm_hw_params_free(pcm->hw_params);
  on_error_1:
   snd_pcm_close(pcm->pcm);
  on_error_0:
@@ -192,36 +216,49 @@ static int pcm_open(pcm_handle_t* pcm, const pcm_desc_t* desc)
   
 }
 
+
 static void pcm_close(pcm_handle_t* pcm)
 {
   free(pcm->buf);
-  snd_pcm_hw_params_free(pcm->params);
+  snd_pcm_hw_params_free(pcm->hw_params);
+  snd_pcm_sw_params_free(pcm->sw_params);
   snd_pcm_close(pcm->pcm);
 }
 
 
-static int recover_xrun(snd_pcm_t* pcm, int err)
+static int pcm_start(pcm_handle_t* pcm)
+{
+  return snd_pcm_start(pcm->pcm);
+}
+
+
+static int pcm_recover_xrun(pcm_handle_t* pcm, int err)
 {
   switch (err)
   {
   case -EPIPE:
     /* underrun */
-    err = snd_pcm_prepare(pcm);
+    err = snd_pcm_prepare(pcm->pcm);
     if (err < 0) PERROR_GOTO(snd_strerror(err), on_error);
+    snd_pcm_start(pcm->pcm);
     break ;
 
   case -ESTRPIPE:
     while (1)
     {
-      err = snd_pcm_resume(pcm);
+      err = snd_pcm_resume(pcm->pcm);
       if (err != -EAGAIN) break ;
-      usleep(1000000);
+      usleep(10000);
     }
+
     if (err < 0)
     {
-      err = snd_pcm_prepare(pcm);
+      err = snd_pcm_prepare(pcm->pcm);
       if (err < 0) PERROR_GOTO(snd_strerror(err), on_error);
     }
+
+    snd_pcm_start(pcm->pcm);
+
     break ;
 
   default: break ;
@@ -301,6 +338,9 @@ int main(int ac, char** av)
   if (cmd.flags & CMDLINE_FLAG(OPCM)) desc.name = cmd.opcm;
   if (pcm_open(&opcm, &desc)) goto on_error_1;
 
+  if (pcm_start(&ipcm)) goto on_error_2;
+  if (pcm_start(&opcm)) goto on_error_2;
+
   signal(SIGINT, on_sigint);
 
   for (i = 0; is_sigint == 0; i += 1)
@@ -311,23 +351,18 @@ int main(int ac, char** av)
 
     /* read ipcm */
 
+    err = snd_pcm_wait(ipcm.pcm, -1);
+    if (err < 0) goto on_ipcm_xrun;
+
+    navail = (size_t)snd_pcm_avail_update(ipcm.pcm);
+
     if (ipcm.wpos >= ipcm.rpos) nsampl = ipcm.nsampl - ipcm.wpos;
     else nsampl = ipcm.rpos - ipcm.wpos;
-
-#if 0
-    navail = (size_t)snd_pcm_avail_update(ipcm.pcm);
-#else
-    navail = nsampl;
-#endif
     if (nsampl > navail) nsampl = navail;
 
     off = ipcm.wpos * ipcm.scale;
     err = snd_pcm_readi(ipcm.pcm, ipcm.buf + off, nsampl);
-    if (err < 0)
-    {
-      if (recover_xrun(ipcm.pcm, err)) PERROR_GOTO("", on_error_2);
-      err = 0;
-    }
+    if (err < 0) goto on_ipcm_xrun;
 
     ipcm.wpos += (size_t)err;
     if (ipcm.wpos == ipcm.nsampl) ipcm.wpos = 0;
@@ -338,15 +373,21 @@ int main(int ac, char** av)
     else nsampl = ipcm.nsampl - ipcm.rpos;
 
     off = ipcm.rpos * ipcm.scale;
-    err = snd_pcm_writei(opcm.pcm, ipcm.buf + ipcm.rpos, nsampl);
-    if (err < 0)
-    {
-      if (recover_xrun(opcm.pcm, err)) PERROR_GOTO("", on_error_2);
-      err = 0;
-    }
+    err = snd_pcm_writei(opcm.pcm, ipcm.buf + off, nsampl);
+    if (err < 0) goto on_opcm_xrun;
 
     ipcm.rpos += (size_t)err;
     if (ipcm.rpos == ipcm.nsampl) ipcm.rpos = 0;
+
+    continue ;
+
+  on_ipcm_xrun:
+    if (pcm_recover_xrun(&ipcm, err)) PERROR_GOTO("", on_error_2);
+    continue ;
+
+  on_opcm_xrun:
+    if (pcm_recover_xrun(&opcm, err)) PERROR_GOTO("", on_error_2);
+    continue ;
   }
 
   err = 0;
