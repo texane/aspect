@@ -325,34 +325,15 @@ static size_t mod_apply
  size_t off, size_t n
 )
 {
-  const size_t nn = n;
-
   size_t i;
-  size_t j;
-  size_t k;
 
   if (n < mod->n) return 0;
   n = mod->n;
 
-  if ((off + n) > size) k = size - off;
-  else k = n;
-
-#if 0
-  for (i = 0, j = off; i != k; ++i, ++j)
-  {
-    ((double*)mod->buf)[i] = (double)((int16_t*)buf)[j];
-  }
-
-  for (j = 0; i != n; ++i, ++j)
-  {
-    ((double*)mod->buf)[i] = (double)((int16_t*)buf)[j];
-  }
-#else
   for (i = 0; i != n; ++i)
   {
-    ((double*)mod->buf)[i] = (double)buf[(off + i) % nn];
+    ((double*)mod->buf)[i] = (double)buf[(off + i) % size];
   }
-#endif
 
   fftw_execute(mod->fplan);
 
@@ -360,37 +341,10 @@ static size_t mod_apply
 
   fftw_execute(mod->bplan);
 
-  {
-    static size_t ii = 0;
-    for (i = 0; i != n; ++i, ++ii)
-    {
-      printf
-      (
-       "%zu %lf %lf\n",
-       ii,
-       (double)buf[(off + i) % nn],
-       ((double*)mod->buf)[i] / (double)n
-      );
-    }
-  }
-
-#if 0
-  for (i = 0, j = off; i != k; ++i, ++j)
-  {
-    /* results normalized, divide by n */
-    ((int16_t*)buf)[j] = (int16_t)((double*)mod->buf)[i] / (int16_t)n;
-  }
-
-  for (j = 0; i != n; ++i, ++j)
-  {
-    ((int16_t*)buf)[j] = (int16_t)((double*)mod->buf)[i] / (int16_t)n;
-  }
-#else
   for (i = 0; i != n; ++i)
   {
-    buf[(off + i) % nn] = (int16_t)((double*)mod->buf)[i] / (int16_t)n;
+    buf[(off + i) % size] = (int16_t)((double*)mod->buf)[i] / (int16_t)n;
   }
-#endif
 
   return n;
 }
