@@ -188,7 +188,7 @@ static int pcm_open(pcm_handle_t* pcm, const pcm_desc_t* desc)
 
 #if 1
   err = snd_pcm_sw_params_set_avail_min
-    (pcm->pcm, pcm->sw_params, 4096);
+    (pcm->pcm, pcm->sw_params, 1024);
   if (err) PERROR_GOTO(snd_strerror(err), on_error_3);
 #endif
 
@@ -318,17 +318,41 @@ static void mod_close(mod_handle_t* mod)
   fftw_free(mod->buf);
 }
 
-static size_t mod_apply(mod_handle_t* mod, uint8_t* buf, size_t n)
+static size_t mod_apply
+(
+ mod_handle_t* mod,
+ uint8_t* buf, size_t size,
+ size_t off, size_t n
+)
 {
+  const size_t nn = n;
+
   size_t i;
+  size_t j;
+  size_t k;
 
   if (n < mod->n) return 0;
   n = mod->n;
 
+  if ((off + n) > size) k = size - off;
+  else k = n;
+
+#if 0
+  for (i = 0, j = off; i != k; ++i, ++j)
+  {
+    ((double*)mod->buf)[i] = (double)((int16_t*)buf)[j];
+  }
+
+  for (j = 0; i != n; ++i, ++j)
+  {
+    ((double*)mod->buf)[i] = (double)((int16_t*)buf)[j];
+  }
+#else
   for (i = 0; i != n; ++i)
   {
-    ((double*)mod->buf)[i] = (double)((int16_t*)buf)[i];
+    ((double*)mod->buf)[i] = (double)buf[(off + i) % nn];
   }
+#endif
 
   fftw_execute(mod->fplan);
 
@@ -336,11 +360,37 @@ static size_t mod_apply(mod_handle_t* mod, uint8_t* buf, size_t n)
 
   fftw_execute(mod->bplan);
 
-  for (i = 0; i != n; ++i)
+  {
+    static size_t ii = 0;
+    for (i = 0; i != n; ++i, ++ii)
+    {
+      printf
+      (
+       "%zu %lf %lf\n",
+       ii,
+       (double)buf[(off + i) % nn],
+       ((double*)mod->buf)[i] / (double)n
+      );
+    }
+  }
+
+#if 0
+  for (i = 0, j = off; i != k; ++i, ++j)
   {
     /* results normalized, divide by n */
-    ((int16_t*)buf)[i] = (int16_t)((double*)mod->buf)[i] / (int16_t)n;
+    ((int16_t*)buf)[j] = (int16_t)((double*)mod->buf)[i] / (int16_t)n;
   }
+
+  for (j = 0; i != n; ++i, ++j)
+  {
+    ((int16_t*)buf)[j] = (int16_t)((double*)mod->buf)[i] / (int16_t)n;
+  }
+#else
+  for (i = 0; i != n; ++i)
+  {
+    buf[(off + i) % nn] = (int16_t)((double*)mod->buf)[i] / (int16_t)n;
+  }
+#endif
 
   return n;
 }
@@ -417,7 +467,7 @@ int main(int ac, char** av)
   if (cmd.flags & CMDLINE_FLAG(OPCM)) desc.name = cmd.opcm;
   if (pcm_open(&opcm, &desc)) goto on_error_1;
 
-  if (mod_open(&mod, 1024)) goto on_error_2;
+  if (mod_open(&mod, 512)) goto on_error_2;
 
   if (pcm_start(&ipcm)) goto on_error_3;
   if (pcm_start(&opcm)) goto on_error_3;
@@ -449,24 +499,38 @@ int main(int ac, char** av)
     ipcm.wpos += (size_t)err;
     if (ipcm.wpos == ipcm.nsampl) ipcm.wpos = 0;
 
-    /* apply modifier and write opcm */
+    /* apply modifier */
 
+  redo_mod:
     if (ipcm.wpos >= ipcm.rpos) nsampl = ipcm.wpos - ipcm.rpos;
-    else nsampl = ipcm.nsampl - ipcm.rpos;
-
-    off = ipcm.rpos * ipcm.scale;
+    else nsampl = ipcm.nsampl - ipcm.rpos + ipcm.wpos;
 
     if (cmd.flags & CMDLINE_FLAG(FILT))
     {
-      const size_t n = mod_apply(&mod, ipcm.buf + off, nsampl);
-      if (n == 0) continue ;
+      const size_t n = mod_apply
+	(&mod, ipcm.buf, ipcm.nsampl, ipcm.rpos, nsampl);
+      nsampl = n;
     }
 
+    if (nsampl == 0) continue ;
+
+    if ((ipcm.rpos + nsampl) > ipcm.nsampl)
+    {
+      const size_t n = ipcm.nsampl - ipcm.rpos;
+      off = ipcm.rpos * ipcm.scale;
+      err = snd_pcm_writei(opcm.pcm, ipcm.buf + off, n);
+      if (err < 0) goto on_opcm_xrun;
+      nsampl -= n;
+      ipcm.rpos = 0;
+    }
+
+    off = ipcm.rpos * ipcm.scale;
     err = snd_pcm_writei(opcm.pcm, ipcm.buf + off, nsampl);
     if (err < 0) goto on_opcm_xrun;
-
-    ipcm.rpos += (size_t)err;
+    ipcm.rpos += nsampl;
     if (ipcm.rpos == ipcm.nsampl) ipcm.rpos = 0;
+
+    goto redo_mod;
 
     continue ;
 
