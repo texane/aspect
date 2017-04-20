@@ -150,6 +150,12 @@ int wav_create
 }
 
 
+int wav_create2(wav_handle_t* ow, const wav_handle_t* iw)
+{
+  return wav_create(ow, iw->nchan, iw->wsampl, iw->nsampl, iw->fsampl);
+}
+
+
 int wav_copy(wav_handle_t* ow, const wav_handle_t* iw)
 {
   const size_t size = iw->wsampl * iw->nsampl * iw->nchan;

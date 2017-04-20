@@ -24,6 +24,7 @@ typedef struct wav_handle
 
 int wav_open(wav_handle_t*, const char*);
 int wav_create(wav_handle_t*, size_t, size_t, size_t, unsigned int);
+int wav_create2(wav_handle_t*, const wav_handle_t*);
 int wav_copy(wav_handle_t*, const wav_handle_t*);
 void wav_close(wav_handle_t*);
 int wav_write(wav_handle_t*, const char*);
