@@ -109,20 +109,13 @@ int main(int ac, char** av)
     goto on_error_0;
   }
 
-  if (wav_create(&ow, iw.nchan, iw.wsampl, iw.nsampl))
+  if (wav_copy(&ow, &iw))
   {
     PERROR();
     goto on_error_1;
   }
 
-  memcpy
-  (
-   wav_get_sampl_buf(&ow),
-   wav_get_sampl_buf(&iw),
-   iw.wsampl * iw.nsampl * iw.nchan
-  );
-
-  if (wav_write(&ow, cmd.opath, iw.fsampl))
+  if (wav_write(&ow, cmd.opath))
   {
     PERROR();
     goto on_error_2;

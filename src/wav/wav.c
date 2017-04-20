@@ -126,7 +126,10 @@ int wav_open(wav_handle_t* w, const char* path)
 
 
 int wav_create
-(wav_handle_t* w, size_t nchan, size_t wsampl, size_t nsampl)
+(
+ wav_handle_t* w,
+ size_t nchan, size_t wsampl, size_t nsampl, unsigned int fsampl
+)
 {
   w->flags = 0;
 
@@ -134,7 +137,7 @@ int wav_create
   w->wsampl = wsampl;
   w->nsampl = nsampl;
 
-  w->fsampl = 0;
+  w->fsampl = fsampl;
 
   w->size = sizeof(wav_header_t) + nchan * wsampl * nsampl;
   w->data = malloc(w->size);
@@ -147,7 +150,19 @@ int wav_create
 }
 
 
-int wav_write(wav_handle_t* w, const char* path, unsigned int fsampl)
+int wav_copy(wav_handle_t* ow, const wav_handle_t* iw)
+{
+  const size_t size = iw->wsampl * iw->nsampl * iw->nchan;
+
+  if (wav_create(ow, iw->nchan, iw->wsampl, iw->nsampl, iw->fsampl)) return -1;
+
+  memcpy(wav_get_sampl_buf(ow), wav_get_sampl_buf((void*)iw), size);
+
+  return 0;
+}
+
+
+int wav_write(wav_handle_t* w, const char* path)
 {
   wav_header_t* const h = (wav_header_t*)w->data;
   int err = -1;
@@ -166,8 +181,8 @@ int wav_write(wav_handle_t* w, const char* path, unsigned int fsampl)
   h->block_size = 16;
   h->audio_format = WAV_PCM_FORMAT;
   h->channels = (uint16_t)w->nchan;
-  h->freq = (uint32_t)fsampl;
-  h->bytes_per_second = (uint32_t)(fsampl * w->nchan * w->wsampl);
+  h->freq = (uint32_t)w->fsampl;
+  h->bytes_per_second = (uint32_t)(w->fsampl * w->nchan * w->wsampl);
   h->bytes_per_block = (uint16_t)(w->nchan * w->wsampl);
   h->bits_per_sample = (uint16_t)(w->wsampl * 8);
 
