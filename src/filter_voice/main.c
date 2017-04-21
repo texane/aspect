@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
 #include <sys/types.h>
 #include <fftw3.h>
 #include "wav.h"
@@ -102,37 +103,6 @@ static void filter_fini(filter_handle_t* f)
   fftw_free(f->buf);
 }
 
-static size_t filter_apply
-(
- filter_handle_t* f,
- uint8_t* buf, size_t size,
- size_t off, size_t n
-)
-{
-  size_t i;
-
-  if (n < f->n) return 0;
-  n = f->n;
-
-  for (i = 0; i != n; ++i)
-  {
-    ((double*)f->buf)[i] = (double)buf[(off + i) % size];
-  }
-
-  fftw_execute(mod->fplan);
-
-  /* TODO: process mod->buf, fftw_complex format */
-
-  fftw_execute(mod->bplan);
-
-  for (i = 0; i != n; ++i)
-  {
-    buf[(off + i) % size] = (int16_t)((double*)mod->buf)[i] / (int16_t)n;
-  }
-
-  return n;
-}
-
 static void int16_to_double
 (double* obuf, const int16_t* ibuf, size_t n, size_t w)
 {
@@ -148,41 +118,66 @@ static void double_to_int16
 }
 
 static void filter_one_chunk
-(filter_handle_t* f, uint8_t* obuf, const uint8_t* ibuf, size_t w)
+(filter_handle_t* f, uint8_t* obuf, const uint8_t* ibuf)
 {
-  /* prepare one chunk */
-  /* cast from ibuf (wsampl format) into f->buf (double format) */
+  static const double fsampl = 44100;
+  static const double flo = 85.0;
+  static const double fhi = 255.0;
 
-  int16_to_double(f->buf, ibuf, f->n, w);
+  const size_t ilo = (size_t)ceil((flo * (double)f->n * 2.0) / fsampl);
+  const size_t ihi = (size_t)ceil((fhi * (double)f->n * 2.0) / fsampl);
 
-  int16_t* p;
   size_t i;
 
-  p = (int16_t*)ibuf;
+  fftw_execute(f->fplan);
 
-  for (i = 0; i != filter->n; ++i, p)
-  {
-    real_buf[i] = (double)(*((uint16_t*)ibuf));
-  }
+  for (i = 0; i != ilo; ++i) ((double*)f->buf)[i] = 0.0;
+  for (i = ihi; i != f->n; ++i) ((double*)f->buf)[i] = 0.0;
 
+  fftw_execute(f->bplan);
+
+  for (i = 0; i != f->n; ++i) ((double*)f->buf)[i] /= f->n;
 }
 
 static void filter_one_chan
 (
  filter_handle_t* f,
  uint8_t* obuf, const uint8_t* ibuf,
- size_t nsampl, size_t wsampl, size_t nchan
+ size_t nchan, size_t nsampl, size_t wsampl
 )
 {
+  /* filter one chan by chunk of f->n samples */
+
+  const size_t n = nsampl / f->n;
+  const size_t w = f->n * nchan;
   size_t i;
 
-  for (i = 0; i != (n / f->n); ++i, obuf += (f->n * w), ibuf += (f->n * w))
+  /* unused since assuming int16 */
+  wsampl = wsampl;
+
+  for (i = 0; i != n; ++i, obuf += w, ibuf += w)
   {
-    filter_one_chunk(f, obuf, ibuf, w);
+    int16_to_double(f->buf, (const int16_t*)ibuf, f->n, nchan);
+    filter_one_chunk(f, obuf, ibuf);
+    double_to_int16((int16_t*)obuf, f->buf, f->n, nchan);
+  }
+
+  /* remaining partial chunk */
+  if ((n * f->n) != nsampl)
+  {
+    const size_t r = nsampl - (n * f->n);
+    int16_to_double(f->buf, (const int16_t*)ibuf, r, nchan);
+    for (i = r; i != f->n; ++i) ((double*)f->buf)[i] = 0.0;
+    filter_one_chunk(f, obuf, ibuf);
+    double_to_int16((int16_t*)obuf, f->buf, f->n, nchan);
   }
 }
 
-static void filter_wav(wav_handle_t* ow, wav_handle_t* iw)
+static int filter_voice
+(
+ uint8_t* obuf, const uint8_t* ibuf,
+ size_t nchan, size_t nsampl, size_t wsampl
+)
 {
   filter_handle_t f;
   size_t i;
@@ -197,17 +192,14 @@ static void filter_wav(wav_handle_t* ow, wav_handle_t* iw)
 
   if (filter_init(&f, 8192)) return -1;
 
-  for (i = 0; i != iw->nchan; ++i)
+  for (i = 0; i != nchan; ++i, ibuf += wsampl, obuf += wsampl)
   {
-    uint8_t* const ibuf = (uint8_t*)wav_get_sampl_buf(iw) + i * iw->wsampl;
-    uint8_t* const obuf = (uint8_t*)wav_get_sampl_buf(ow) + i * ow->wsampl;
-    filter_one_chan(&f, obuf, ibuf, iw->nsampl, i->wsampl);
+    filter_one_chan(&f, obuf, ibuf, nchan, nsampl, wsampl);
   }
 
   filter_fini(&f);
 
   return 0;
-
 }
 
 
@@ -244,11 +236,30 @@ int main(int ac, char** av)
     goto on_error_0;
   }
 
-  if (wav_copy(&ow, &iw))
+  if (iw.wsampl != 2)
+  {
+    /* only int16_t supported */
+    PERROR();
+    goto on_error_0;
+  }
+
+  if (iw.fsampl != 44100)
+  {
+    PERROR();
+    goto on_error_0;
+  }
+
+  if (wav_create2(&ow, &iw))
   {
     PERROR();
     goto on_error_1;
   }
+
+  filter_voice
+  (
+   wav_get_sampl_buf(&ow), (const void*)wav_get_sampl_buf(&iw),
+   iw.nchan, iw.nsampl, iw.wsampl
+  );
 
   if (wav_write(&ow, cmd.opath))
   {
