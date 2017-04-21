@@ -117,8 +117,7 @@ static void double_to_int16
   for (i = 0; i != n; ++i, ++ibuf, obuf += w) *obuf = (int16_t)*ibuf;
 }
 
-static void filter_one_chunk
-(filter_handle_t* f, uint8_t* obuf, const uint8_t* ibuf)
+static void filter_one_chunk(filter_handle_t* f)
 {
   static const double fsampl = 44100;
   static const double flo = 85.0;
@@ -131,8 +130,19 @@ static void filter_one_chunk
 
   fftw_execute(f->fplan);
 
-  for (i = 0; i != ilo; ++i) ((double*)f->buf)[i] = 0.0;
-  for (i = ihi; i != f->n; ++i) ((double*)f->buf)[i] = 0.0;
+#if 0
+  for (i = 0; i != ilo; ++i)
+  {
+    ((double*)f->buf)[(i * 2) + 0] = 0.0;
+    ((double*)f->buf)[(i * 2) + 1] = 0.0;
+  }
+
+  for (i = ihi; i != f->n; ++i)
+  {
+    ((double*)f->buf)[(i * 2) + 0] = 0.0;
+    ((double*)f->buf)[(i * 2) + 1] = 0.0;
+  }
+#endif
 
   fftw_execute(f->bplan);
 
@@ -149,7 +159,7 @@ static void filter_one_chan
   /* filter one chan by chunk of f->n samples */
 
   const size_t n = nsampl / f->n;
-  const size_t w = f->n * nchan;
+  const size_t w = f->n * nchan * wsampl;
   size_t i;
 
   /* unused since assuming int16 */
@@ -158,7 +168,7 @@ static void filter_one_chan
   for (i = 0; i != n; ++i, obuf += w, ibuf += w)
   {
     int16_to_double(f->buf, (const int16_t*)ibuf, f->n, nchan);
-    filter_one_chunk(f, obuf, ibuf);
+    filter_one_chunk(f);
     double_to_int16((int16_t*)obuf, f->buf, f->n, nchan);
   }
 
@@ -168,8 +178,8 @@ static void filter_one_chan
     const size_t r = nsampl - (n * f->n);
     int16_to_double(f->buf, (const int16_t*)ibuf, r, nchan);
     for (i = r; i != f->n; ++i) ((double*)f->buf)[i] = 0.0;
-    filter_one_chunk(f, obuf, ibuf);
-    double_to_int16((int16_t*)obuf, f->buf, f->n, nchan);
+    filter_one_chunk(f);
+    double_to_int16((int16_t*)obuf, f->buf, r, nchan);
   }
 }
 
