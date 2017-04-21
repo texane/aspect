@@ -120,8 +120,8 @@ static void double_to_int16
 static void filter_one_chunk(filter_handle_t* f)
 {
   static const double fsampl = 44100;
-  static const double flo = 85.0;
-  static const double fhi = 255.0;
+  static const double flo = 400.0;
+  static const double fhi = 1000.0;
 
   const size_t ilo = (size_t)ceil((flo * (double)f->n * 2.0) / fsampl);
   const size_t ihi = (size_t)ceil((fhi * (double)f->n * 2.0) / fsampl);
@@ -130,19 +130,17 @@ static void filter_one_chunk(filter_handle_t* f)
 
   fftw_execute(f->fplan);
 
-#if 0
   for (i = 0; i != ilo; ++i)
   {
-    ((double*)f->buf)[(i * 2) + 0] = 0.0;
-    ((double*)f->buf)[(i * 2) + 1] = 0.0;
+    ((double*)f->buf)[i] = 0.0;
+    ((double*)f->buf)[i] = 0.0;
   }
 
   for (i = ihi; i != f->n; ++i)
   {
-    ((double*)f->buf)[(i * 2) + 0] = 0.0;
-    ((double*)f->buf)[(i * 2) + 1] = 0.0;
+    ((double*)f->buf)[i] = 0.0;
+    ((double*)f->buf)[i] = 0.0;
   }
-#endif
 
   fftw_execute(f->bplan);
 
