@@ -208,17 +208,11 @@ static void filter_one_chunk(filter_handle_t* f)
       if ((freq >= flo) && (freq <= fhi)) break ;
     }
 
-    if (j != f->nband)
-    {
-      printf("keeping %lf (%zu)\n", freq, i);
-      continue ;
-    }
+    if (j != f->nband) continue ;
 
     ((fftw_complex*)f->buf)[i][0] = 0.0;
     ((fftw_complex*)f->buf)[i][1] = 0.0;
   }
-  printf("\n");
-  printf("\n");
 #endif
 
   fftw_execute(f->bplan);
@@ -270,9 +264,6 @@ static int filter_voice
   filter_handle_t f;
   size_t i;
 
-  /* https://en.wikipedia.org/wiki/Voice_frequency */
-  /* male: from 85 to 180 Hz */
-  /* female: from 165 to 255 Hz */
   /* resolution: 5 Hz */
   /* fres = fsampl / (nsampl * 2) */
   /* nsampl = 44100 / (5 * 2) = 4410 */
@@ -320,6 +311,10 @@ int main(int ac, char** av)
 
   if (cmd.nband == 0)
   {
+    /* https://en.wikipedia.org/wiki/Voice_frequency */
+    /* male: from 85 to 180 Hz */
+    /* female: from 165 to 255 Hz */
+
     cmd.bands[0 * 2 + 0] = 80.0;
     cmd.bands[0 * 2 + 1] = 260.0;
     cmd.nband = 1;
