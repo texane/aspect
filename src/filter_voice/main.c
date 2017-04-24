@@ -26,7 +26,35 @@ typedef struct
   uint32_t flags;
   const char* ipath;
   const char* opath;
+  size_t nband;
+  double bands[32 * 2];
 } cmd_handle_t;
+
+static int cmd_parse_band(const char* s, double* lo, double* hi)
+{
+  char* e;
+
+#define FILTER_BAND_MIN 0.0
+#define FILTER_BAND_MAX 10000000.0
+  *lo = FILTER_BAND_MIN;
+  *hi = FILTER_BAND_MAX;
+
+  if (*s != ':')
+  {
+    *lo = strtod(s, &e);
+    if (e == s) return -1;
+    s = e;
+  }
+
+  if (*s == ':')
+  {
+    ++s;
+    *hi = strtod(s, &e);
+    if (e == s) return -1;
+  }
+
+  return 0;
+}
 
 static int cmd_init(cmd_handle_t* cmd, int ac, char** av)
 {
@@ -35,6 +63,7 @@ static int cmd_init(cmd_handle_t* cmd, int ac, char** av)
   cmd->flags = 0;
   cmd->ipath = NULL;
   cmd->opath = NULL;
+  cmd->nband = 0;
 
   if ((ac % 2)) goto on_error;
 
@@ -52,6 +81,21 @@ static int cmd_init(cmd_handle_t* cmd, int ac, char** av)
     {
       cmd->flags |= CMD_FLAG_OPATH;
       cmd->opath = v;
+    }
+    else if (strcmp(k, "-band") == 0)
+    {
+      double* const lo = &cmd->bands[cmd->nband * 2 + 0];
+      double* const hi = &cmd->bands[cmd->nband * 2 + 1];
+
+      if (cmd->nband == (sizeof(cmd->bands) / (2 * sizeof(cmd->bands[0]))))
+	goto on_error;
+
+      if (cmd_parse_band(v, lo, hi)) goto on_error;
+
+      if (*lo < FILTER_BAND_MIN) goto on_error;
+      if (*hi > FILTER_BAND_MAX) goto on_error;
+
+      ++cmd->nband;
     }
     else goto on_error;
   }
@@ -71,9 +115,14 @@ typedef struct
   fftw_plan fplan;
   fftw_plan bplan;
   size_t n;
+
+  const double* bands;
+  size_t nband;
+
 } filter_handle_t;
 
-static int filter_init(filter_handle_t* f, size_t n)
+static int filter_init
+(filter_handle_t* f, size_t n, const double* bands, size_t nband)
 {
   f->n = n;
 
@@ -85,6 +134,9 @@ static int filter_init(filter_handle_t* f, size_t n)
 
   f->bplan = fftw_plan_dft_c2r_1d(n, f->buf, f->buf, FFTW_ESTIMATE);
   if (f->bplan == NULL) goto on_error_2;
+
+  f->bands = bands;
+  f->nband = nband;
 
   return 0;
 
@@ -120,16 +172,19 @@ static void double_to_int16
 static void filter_one_chunk(filter_handle_t* f)
 {
   static const double fsampl = 44100;
+#if 0
   static const double flo = 200.0;
   static const double fhi = 1000.0;
-
   const size_t ilo = (size_t)ceil((flo * (double)f->n) / fsampl);
-  const size_t ihi = (size_t)ceil((fhi * (double)f->n) / fsampl);
+  const size_t ihi = (size_t)floor((fhi * (double)f->n) / fsampl);
+#endif
 
   size_t i;
+  size_t j;
 
   fftw_execute(f->fplan);
 
+#if 0
   for (i = 0; i != ilo; ++i)
   {
     ((fftw_complex*)f->buf)[i][0] = 0.0;
@@ -141,6 +196,30 @@ static void filter_one_chunk(filter_handle_t* f)
     ((fftw_complex*)f->buf)[i][0] = 0.0;
     ((fftw_complex*)f->buf)[i][1] = 0.0;
   }
+#else
+  for (i = 0; i != ((f->n / 2) + 1); ++i)
+  {
+    const double freq = ((double)i * fsampl) / (double)f->n;
+
+    for (j = 0; j != f->nband; ++j)
+    {
+      const double flo = f->bands[j * 2 + 0];
+      const double fhi = f->bands[j * 2 + 1];
+      if ((freq >= flo) && (freq <= fhi)) break ;
+    }
+
+    if (j != f->nband)
+    {
+      printf("keeping %lf (%zu)\n", freq, i);
+      continue ;
+    }
+
+    ((fftw_complex*)f->buf)[i][0] = 0.0;
+    ((fftw_complex*)f->buf)[i][1] = 0.0;
+  }
+  printf("\n");
+  printf("\n");
+#endif
 
   fftw_execute(f->bplan);
 
@@ -184,7 +263,8 @@ static void filter_one_chan
 static int filter_voice
 (
  uint8_t* obuf, const uint8_t* ibuf,
- size_t nchan, size_t nsampl, size_t wsampl
+ size_t nchan, size_t nsampl, size_t wsampl,
+ const double* bands, size_t nband
 )
 {
   filter_handle_t f;
@@ -198,7 +278,7 @@ static int filter_voice
   /* nsampl = 44100 / (5 * 2) = 4410 */
   /* thus, nsampl of 8192 (next power of 2) */
 
-  if (filter_init(&f, 8192)) return -1;
+  if (filter_init(&f, 8192, bands, nband)) return -1;
 
   for (i = 0; i != nchan; ++i, ibuf += wsampl, obuf += wsampl)
   {
@@ -238,6 +318,13 @@ int main(int ac, char** av)
     goto on_error_0;
   }
 
+  if (cmd.nband == 0)
+  {
+    cmd.bands[0 * 2 + 0] = 80.0;
+    cmd.bands[0 * 2 + 1] = 260.0;
+    cmd.nband = 1;
+  }
+
   if (wav_open(&iw, cmd.ipath))
   {
     PERROR();
@@ -266,7 +353,8 @@ int main(int ac, char** av)
   filter_voice
   (
    wav_get_sampl_buf(&ow), (const void*)wav_get_sampl_buf(&iw),
-   iw.nchan, iw.nsampl, iw.wsampl
+   iw.nchan, iw.nsampl, iw.wsampl,
+   cmd.bands, cmd.nband
   );
 
   if (wav_write(&ow, cmd.opath))
